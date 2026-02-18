@@ -142,8 +142,7 @@ export class GroupQueue {
       this.scheduleRetry(groupJid, state);
     } finally {
       state.active = false;
-      state.process = null;
-      state.containerName = null;
+      // Don't null process/containerName — persistent containers stay registered
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -165,8 +164,7 @@ export class GroupQueue {
       logger.error({ groupJid, taskId: task.id, err }, 'Error running task');
     } finally {
       state.active = false;
-      state.process = null;
-      state.containerName = null;
+      // Don't null process/containerName — persistent containers stay registered
       this.activeCount--;
       this.drainGroup(groupJid);
     }
@@ -261,7 +259,7 @@ export class GroupQueue {
         // but we sanitize again here since exec() runs through a shell.
         const safeName = containerName.replace(/[^a-zA-Z0-9-]/g, '');
         logger.info({ jid, containerName: safeName }, 'Stopping container');
-        exec(`container stop ${safeName}`, (err) => {
+        exec(`docker stop ${safeName}`, (err) => {
           if (err) {
             logger.warn({ jid, containerName: safeName, err: err.message }, 'container stop failed');
           }

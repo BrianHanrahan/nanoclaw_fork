@@ -23,7 +23,7 @@ import {
 import {
   AgentResponse,
   AvailableGroup,
-  runContainerAgent,
+  ContainerPool,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -69,6 +69,7 @@ let ipcWatcherRunning = false;
 let groupSyncTimerStarted = false;
 
 const queue = new GroupQueue();
+const containerPool = new ContainerPool();
 
 /**
  * Translate a JID from LID format to phone format if we have a mapping.
@@ -248,7 +249,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   if (response.outputType === 'message' && response.userMessage) {
-    await sendMessage(chatJid, `${ASSISTANT_NAME}: ${response.userMessage}`);
+    const modelLabel = response.model
+      ? ` [${response.model.replace('claude-', '').replace(/-\d.*$/, '')}]`
+      : '';
+    await sendMessage(chatJid, `${ASSISTANT_NAME}${modelLabel}: ${response.userMessage}`);
   }
 
   if (response.internalLog) {
@@ -265,7 +269,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
-): Promise<AgentResponse | 'error'> {
+): Promise<(AgentResponse & { model?: string }) | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
 
@@ -295,7 +299,7 @@ async function runAgent(
   );
 
   try {
-    const output = await runContainerAgent(
+    const output = await containerPool.sendRequest(
       group,
       {
         prompt,
@@ -320,7 +324,8 @@ async function runAgent(
       return 'error';
     }
 
-    return output.result ?? { outputType: 'log' };
+    const result = output.result ?? { outputType: 'log' as const };
+    return { ...result, model: output.model };
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
@@ -752,6 +757,7 @@ async function connectWhatsApp(): Promise<void> {
         registeredGroups: () => registeredGroups,
         getSessions: () => sessions,
         queue,
+        containerPool,
         onProcess: (groupJid, proc, containerName) => queue.registerProcess(groupJid, proc, containerName),
       });
       startIpcWatcher();
@@ -763,7 +769,7 @@ async function connectWhatsApp(): Promise<void> {
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('messages.upsert', ({ messages }) => {
+  sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (!msg.message) continue;
       const rawJid = msg.key.remoteJid;
@@ -781,12 +787,30 @@ async function connectWhatsApp(): Promise<void> {
 
       // Only store full message content for registered groups
       if (registeredGroups[chatJid]) {
-        storeMessage(
-          msg,
-          chatJid,
-          msg.key.fromMe || false,
-          msg.pushName || undefined,
-        );
+        // Check if this is a voice message
+        if (msg.message.audioMessage?.ptt) {
+          try {
+            const { transcribeAudioMessage } = await import('./transcription.js');
+            const transcript = await transcribeAudioMessage(msg, sock);
+
+            if (transcript) {
+              storeMessage(msg, chatJid, msg.key.fromMe || false, msg.pushName || undefined, `[Voice: ${transcript}]`);
+              logger.info({ chatJid, length: transcript.length }, 'Transcribed voice message');
+            } else {
+              storeMessage(msg, chatJid, msg.key.fromMe || false, msg.pushName || undefined, '[Voice Message - transcription unavailable]');
+            }
+          } catch (err) {
+            logger.error({ err }, 'Voice transcription error');
+            storeMessage(msg, chatJid, msg.key.fromMe || false, msg.pushName || undefined, '[Voice Message - transcription failed]');
+          }
+        } else {
+          storeMessage(
+            msg,
+            chatJid,
+            msg.key.fromMe || false,
+            msg.pushName || undefined,
+          );
+        }
       }
     }
   });
@@ -852,48 +876,77 @@ function recoverPendingMessages(): void {
   }
 }
 
+/**
+ * Start the fitness tracker server as a persistent Docker sidecar container.
+ * Mounts the main group folder so data is accessible to agents.
+ * Runs on port 5050 of the host, accessible from any device on the network.
+ */
+function startFitnessServer(): void {
+  const projectRoot = process.cwd();
+  const mainGroupDir = path.join(projectRoot, 'groups', 'main');
+  const containerName = 'nanoclaw-fitness-server';
+
+  // Stop and remove any existing fitness server container
+  try {
+    execSync(`docker rm -f ${containerName}`, { stdio: 'pipe' });
+    logger.info('Removed existing fitness server container');
+  } catch {
+    // Container didn't exist, that's fine
+  }
+
+  // Launch the fitness server container:
+  // - python:3-slim image (lightweight, no need to rebuild nanoclaw image)
+  // - Mounts the main group folder so server.py and fitness-data.json are accessible
+  // - Exposes port 5050 on all host interfaces
+  // - Runs detached so it persists between agent invocations
+  try {
+    execSync(
+      `docker run -d --rm --name ${containerName} ` +
+      `-p 5050:5050 ` +
+      `-v "${mainGroupDir}:/workspace/group" ` +
+      `-w /workspace/group/fitness-tracker ` +
+      `python:3-slim python3 server.py`,
+      { stdio: 'pipe' },
+    );
+    logger.info({ containerName, port: 5050 }, 'Fitness server started');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to start fitness server (non-fatal)');
+  }
+}
+
 function ensureContainerSystemRunning(): void {
   try {
-    execSync('container system status', { stdio: 'pipe' });
-    logger.debug('Apple Container system already running');
+    execSync('docker info', { stdio: 'pipe' });
+    logger.debug('Docker daemon is running');
   } catch {
-    logger.info('Starting Apple Container system...');
-    try {
-      execSync('container system start', { stdio: 'pipe', timeout: 30000 });
-      logger.info('Apple Container system started');
-    } catch (err) {
-      logger.error({ err }, 'Failed to start Apple Container system');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Apple Container system failed to start                 ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without Apple Container. To fix:           ║',
-      );
-      console.error(
-        '║  1. Install from: https://github.com/apple/container/releases ║',
-      );
-      console.error(
-        '║  2. Run: container system start                               ║',
-      );
-      console.error(
-        '║  3. Restart NanoClaw                                          ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Apple Container system is required but failed to start');
-    }
+    logger.error('Docker daemon is not running');
+    console.error(
+      '\n╔════════════════════════════════════════════════════════════════╗',
+    );
+    console.error(
+      '║  FATAL: Docker is not running                                  ║',
+    );
+    console.error(
+      '║                                                                ║',
+    );
+    console.error(
+      '║  Agents cannot run without Docker. To fix:                    ║',
+    );
+    console.error(
+      '║  1. Start Docker Desktop or the Docker daemon                 ║',
+    );
+    console.error(
+      '║  2. Restart NanoClaw                                          ║',
+    );
+    console.error(
+      '╚════════════════════════════════════════════════════════════════╝\n',
+    );
+    throw new Error('Docker is required but not running');
   }
 
   // Clean up stopped NanoClaw containers from previous runs
   try {
-    const output = execSync('container ls -a --format {{.Names}}', {
+    const output = execSync('docker ps -a --filter name=nanoclaw- --format {{.Names}}', {
       stdio: ['pipe', 'pipe', 'pipe'],
       encoding: 'utf-8',
     });
@@ -902,24 +955,35 @@ function ensureContainerSystemRunning(): void {
       .map((n) => n.trim())
       .filter((n) => n.startsWith('nanoclaw-'));
     if (stale.length > 0) {
-      execSync(`container rm ${stale.join(' ')}`, { stdio: 'pipe' });
+      execSync(`docker rm ${stale.join(' ')}`, { stdio: 'pipe' });
       logger.info({ count: stale.length }, 'Cleaned up stopped containers');
     }
   } catch {
-    // No stopped containers or ls/rm not supported
+    // No stopped containers
   }
 }
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  startFitnessServer();
   initDatabase();
   logger.info('Database initialized');
   loadState();
 
+  // Warm up persistent containers for all registered groups
+  for (const group of Object.values(registeredGroups)) {
+    containerPool.ensureContainer(group).catch((err) =>
+      logger.warn({ group: group.name, err: err instanceof Error ? err.message : String(err) }, 'Failed to pre-warm container'),
+    );
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    await queue.shutdown(10000);
+    await Promise.all([
+      queue.shutdown(10000),
+      containerPool.shutdown(10000),
+    ]);
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

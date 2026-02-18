@@ -10,7 +10,7 @@ import {
   SCHEDULER_POLL_INTERVAL,
   TIMEZONE,
 } from './config.js';
-import { runContainerAgent, writeTasksSnapshot } from './container-runner.js';
+import { ContainerPool, writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -27,6 +27,7 @@ export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
   queue: GroupQueue;
+  containerPool: ContainerPool;
   onProcess: (groupJid: string, proc: ChildProcess, containerName: string) => void;
 }
 
@@ -90,7 +91,7 @@ async function runTask(
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
   try {
-    const output = await runContainerAgent(
+    const output = await deps.containerPool.sendRequest(
       group,
       {
         prompt: task.prompt,
@@ -98,6 +99,7 @@ async function runTask(
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isMain,
+        isScheduledTask: true,
       },
       (proc, containerName) => deps.onProcess(task.chat_jid, proc, containerName),
     );

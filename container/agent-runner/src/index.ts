@@ -1,6 +1,6 @@
 /**
- * NanoClaw Agent Runner
- * Runs inside a container, receives config via stdin, outputs result to stdout
+ * NanoClaw Agent Runner (Persistent)
+ * Runs inside a long-lived container, polls for request files via IPC
  */
 
 import fs from 'fs';
@@ -9,6 +9,8 @@ import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-a
 import { createIpcMcp } from './ipc-mcp.js';
 
 interface ContainerInput {
+  requestId: string;
+  type?: 'request' | 'shutdown';
   prompt: string;
   sessionId?: string;
   groupFolder: string;
@@ -44,9 +46,11 @@ const AGENT_RESPONSE_SCHEMA = {
 } as const;
 
 interface ContainerOutput {
+  requestId: string;
   status: 'success' | 'error';
   result: AgentResponse | null;
   newSessionId?: string;
+  model?: string;
   error?: string;
 }
 
@@ -61,31 +65,20 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
-async function readStdin(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', chunk => { data += chunk; });
-    process.stdin.on('end', () => resolve(data));
-    process.stdin.on('error', reject);
-  });
-}
-
-const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
-
-function writeOutput(output: ContainerOutput): void {
-  console.log(OUTPUT_START_MARKER);
-  console.log(JSON.stringify(output));
-  console.log(OUTPUT_END_MARKER);
-}
+const IPC_DIR = '/workspace/ipc';
+const REQUESTS_DIR = path.join(IPC_DIR, 'requests');
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
+const READY_FILE = path.join(IPC_DIR, 'ready');
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
-  // sessions-index.json is in the same directory as the transcript
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
 
@@ -226,21 +219,77 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
-async function main(): Promise<void> {
-  let input: ContainerInput;
+/**
+ * Triage the incoming prompt using a fast model (Haiku) to decide
+ * whether the request needs a powerful model (Opus) or a fast one (Sonnet).
+ *
+ * Simple/fast cases: logging workouts, quick questions, short factual answers,
+ *   greetings, status checks, simple reminders.
+ * Complex/powerful cases: research, planning, writing code, multi-step tasks,
+ *   web searches, scheduling, analysis, anything requiring tools or judgment.
+ *
+ * Returns the model string to pass to query().
+ */
+async function triageModel(prompt: string): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    log('No ANTHROPIC_API_KEY found, defaulting to sonnet');
+    return 'claude-sonnet-4-5';
+  }
+
+  const triagePrompt = `You are a routing assistant. Classify the following user request and respond with ONLY one word:
+- "haiku" if it is simple: logging data, short factual answers, greetings, status checks, yes/no questions, simple confirmations
+- "sonnet" if it is moderate: general conversation, straightforward tasks, short writing, basic research
+- "opus" if it is complex: multi-step planning, writing or modifying code, deep research, scheduling systems, architectural decisions, tasks requiring many tools
+
+User request: ${prompt.slice(0, 500)}
+
+Respond with only one word: haiku, sonnet, or opus`;
 
   try {
-    const stdinData = await readStdin();
-    input = JSON.parse(stdinData);
-    log(`Received input for group: ${input.groupFolder}`);
-  } catch (err) {
-    writeOutput({
-      status: 'error',
-      result: null,
-      error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: triagePrompt }],
+      }),
     });
-    process.exit(1);
+
+    if (!response.ok) {
+      log(`Triage API error ${response.status}, defaulting to sonnet`);
+      return 'claude-sonnet-4-5';
+    }
+
+    const data = await response.json() as { content: Array<{ type: string; text: string }> };
+    const decision = data.content?.[0]?.text?.trim().toLowerCase() ?? '';
+
+    if (decision.includes('haiku')) {
+      log('Triage: haiku (simple request)');
+      return 'claude-haiku-4-5';
+    } else if (decision.includes('opus')) {
+      log('Triage: opus (complex request)');
+      return 'claude-opus-4-5';
+    } else {
+      log('Triage: sonnet (moderate request)');
+      return 'claude-sonnet-4-5';
+    }
+  } catch (err) {
+    log(`Triage failed: ${err instanceof Error ? err.message : String(err)}, defaulting to sonnet`);
+    return 'claude-sonnet-4-5';
   }
+}
+
+/**
+ * Process a single request — extracted from the old one-shot main().
+ */
+async function processRequest(input: ContainerInput): Promise<ContainerOutput> {
+  log(`Processing request ${input.requestId} for group: ${input.groupFolder}`);
 
   const ipcMcp = createIpcMcp({
     chatJid: input.chatJid,
@@ -264,14 +313,21 @@ async function main(): Promise<void> {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Triage: pick model based on request complexity
+  // Skip triage for scheduled tasks — always use sonnet for reliability
+  const model = input.isScheduledTask
+    ? 'claude-sonnet-4-5'
+    : await triageModel(prompt);
+
   try {
-    log('Starting agent...');
+    log(`Starting agent with model: ${model}`);
 
     for await (const message of query({
       prompt,
       options: {
         cwd: '/workspace/group',
         resume: input.sessionId,
+        model,
         systemPrompt: globalClaudeMd
           ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
           : undefined,
@@ -310,7 +366,6 @@ async function main(): Promise<void> {
           }
           log(`Agent result: outputType=${result.outputType}${result.internalLog ? `, log=${result.internalLog}` : ''}`);
         } else if (message.subtype === 'success' || message.subtype === 'error_max_structured_output_retries') {
-          // Structured output missing or agent couldn't produce valid structured output — fall back to text
           log(`Structured output unavailable (subtype=${message.subtype}), falling back to text`);
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
           if (textResult) {
@@ -321,23 +376,117 @@ async function main(): Promise<void> {
     }
 
     log('Agent completed successfully');
-    writeOutput({
+    return {
+      requestId: input.requestId,
       status: 'success',
       result: result ?? { outputType: 'log' },
-      newSessionId
-    });
+      newSessionId,
+      model
+    };
 
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
-    writeOutput({
+    return {
+      requestId: input.requestId,
       status: 'error',
       result: null,
       newSessionId,
+      model,
       error: errorMessage
-    });
-    process.exit(1);
+    };
   }
 }
 
-main();
+/**
+ * Write a response file atomically.
+ */
+function writeResponse(requestId: string, output: ContainerOutput): void {
+  const filename = `${requestId}.json`;
+  const responsePath = path.join(RESPONSES_DIR, filename);
+  const tempPath = responsePath + '.tmp';
+  fs.writeFileSync(tempPath, JSON.stringify(output));
+  fs.renameSync(tempPath, responsePath);
+}
+
+/**
+ * Main event loop — polls for request files and processes them.
+ */
+async function runLoop(): Promise<void> {
+  fs.mkdirSync(REQUESTS_DIR, { recursive: true });
+  fs.mkdirSync(RESPONSES_DIR, { recursive: true });
+
+  let shuttingDown = false;
+  let processing = false;
+
+  process.on('SIGTERM', () => {
+    log('SIGTERM received, will exit after current request');
+    shuttingDown = true;
+    if (!processing) {
+      log('No request in progress, exiting now');
+      process.exit(0);
+    }
+  });
+
+  // Signal readiness to host
+  fs.writeFileSync(READY_FILE, new Date().toISOString());
+  log('Container ready, polling for requests');
+
+  while (!shuttingDown) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(REQUESTS_DIR)
+        .filter(f => f.endsWith('.json') && !f.startsWith('.'))
+        .sort();
+    } catch {
+      await sleep(100);
+      continue;
+    }
+
+    if (files.length === 0) {
+      await sleep(100);
+      continue;
+    }
+
+    const filename = files[0];
+    const requestPath = path.join(REQUESTS_DIR, filename);
+    const inProgressPath = requestPath + '.inprogress';
+
+    // Claim the request with atomic rename
+    try {
+      fs.renameSync(requestPath, inProgressPath);
+    } catch {
+      await sleep(50);
+      continue;
+    }
+
+    let input: ContainerInput;
+    try {
+      input = JSON.parse(fs.readFileSync(inProgressPath, 'utf-8'));
+    } catch (err) {
+      log(`Failed to parse request ${filename}: ${err}`);
+      fs.unlinkSync(inProgressPath);
+      continue;
+    }
+
+    // Handle shutdown request
+    if (input.type === 'shutdown') {
+      log('Shutdown request received');
+      fs.unlinkSync(inProgressPath);
+      break;
+    }
+
+    processing = true;
+    const output = await processRequest(input);
+    writeResponse(input.requestId, output);
+
+    // Clean up in-progress file
+    try { fs.unlinkSync(inProgressPath); } catch { /* already cleaned */ }
+    processing = false;
+  }
+
+  log('Container loop exited cleanly');
+  process.exit(0);
+}
+
+runLoop();
