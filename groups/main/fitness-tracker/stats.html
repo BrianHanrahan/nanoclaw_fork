@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Muscle Stats — Brian's Fitness</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  background:#f0f2f5; min-height:100vh; padding:16px; color:#1a1a2e;
+}
+.container { max-width:720px; margin:0 auto; }
+
+/* Header */
+.header {
+  background:#1a1a2e; color:white; border-radius:14px;
+  padding:20px 24px; margin-bottom:14px;
+  display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;
+}
+.header h1 { font-size:18px; font-weight:700; }
+.header .sub { font-size:12px; color:#8892b0; margin-top:2px; }
+.nav-link {
+  color:#8892b0; text-decoration:none; font-size:13px; font-weight:600;
+  padding:6px 14px; border:1px solid #334; border-radius:8px;
+  transition:all 0.15s;
+}
+.nav-link:hover { background:#334; color:white; }
+
+/* Range buttons */
+.range-row { display:flex; gap:8px; margin-bottom:14px; }
+.range-btn {
+  flex:1; padding:9px; background:white; border:1.5px solid #e0e0e0;
+  border-radius:9px; font-size:13px; font-weight:600; cursor:pointer;
+  color:#666; transition:all 0.15s;
+}
+.range-btn.active { background:#1a1a2e; color:white; border-color:#1a1a2e; }
+
+/* Summary cards */
+.summary-grid {
+  display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:14px;
+}
+.s-card {
+  background:white; border-radius:12px; padding:16px 18px;
+  box-shadow:0 1px 3px rgba(0,0,0,0.07);
+}
+.s-label { font-size:11px; text-transform:uppercase; letter-spacing:0.8px; color:#888; }
+.s-value { font-size:22px; font-weight:700; color:#1a1a2e; margin-top:4px; text-transform:capitalize; }
+
+/* Section title */
+.section-title {
+  font-size:12px; font-weight:700; text-transform:uppercase;
+  letter-spacing:0.8px; color:#888; margin:18px 0 10px;
+}
+
+/* Card */
+.card {
+  background:white; border-radius:14px; padding:20px 22px;
+  margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,0.07);
+}
+
+/* Balance gauges */
+.gauges-grid {
+  display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:14px;
+}
+.gauge-wrap {
+  background:white; border-radius:14px; padding:18px 14px 14px;
+  box-shadow:0 1px 3px rgba(0,0,0,0.07); text-align:center;
+}
+.gauge-svg { width:100%; height:auto; }
+.gauge-value { font-size:22px; font-weight:800; margin:4px 0 2px; }
+.gauge-status { font-size:11px; color:#888; font-weight:600; }
+
+/* Volume chart */
+.v-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #f5f5f5; }
+.v-row:last-child { border-bottom:none; }
+.v-label {
+  width:96px; font-size:13px; font-weight:600; color:#333;
+  flex-shrink:0; text-transform:capitalize;
+}
+.neglect-badge {
+  display:inline-block; background:#dc3545; color:white;
+  font-size:10px; font-weight:700; width:15px; height:15px;
+  border-radius:50%; text-align:center; line-height:15px; margin-left:4px;
+}
+.v-bar-wrap { flex:1; background:#f0f2f5; border-radius:4px; height:12px; overflow:hidden; }
+.v-bar { height:100%; border-radius:4px; transition:width 0.5s ease; }
+.v-meta {
+  display:flex; align-items:center; gap:6px; flex-shrink:0;
+  font-size:12px; min-width:110px; justify-content:flex-end;
+}
+.v-reu { color:#888; }
+.trend-up   { color:#28a745; font-weight:700; }
+.trend-down { color:#dc3545; font-weight:700; }
+.trend-flat { color:#888; }
+
+/* Recovery matrix */
+.rm-row { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px; }
+.rm-cell {
+  border-radius:10px; padding:12px 10px; text-align:center;
+  transition:transform 0.15s;
+}
+.rm-cell:hover { transform:scale(1.03); }
+.rm-empty { background:transparent; }
+.rm-nodata { background:#f5f5f5; color:#bbb; }
+.rm-name { font-size:12px; font-weight:700; text-transform:capitalize; }
+.rm-pct  { font-size:20px; font-weight:800; margin:4px 0 2px; }
+.rm-days { font-size:11px; opacity:0.7; }
+
+/* Frequency table */
+.freq-tbl { width:100%; border-collapse:collapse; font-size:13px; }
+.freq-tbl th {
+  text-align:left; padding:8px 10px; font-size:11px; text-transform:uppercase;
+  letter-spacing:0.5px; color:#888; border-bottom:2px solid #f0f0f0;
+}
+.freq-tbl td { padding:9px 10px; border-bottom:1px solid #f5f5f5; }
+.freq-tbl tr:last-child td { border-bottom:none; }
+.freq-ok   td:last-child { color:#28a745; font-weight:700; }
+.freq-low  td:last-child { color:#ffc107; font-weight:700; }
+.freq-miss td:last-child { color:#dc3545; font-weight:700; }
+.freq-miss td:first-child { font-weight:700; }
+
+/* Alerts */
+.alert { padding:11px 14px; border-radius:8px; font-size:13px; margin-bottom:8px; }
+.alert:last-child { margin-bottom:0; }
+.alert-warning { background:#fff3cd; color:#7a5c00; border-left:3px solid #ffc107; }
+.alert-info    { background:#e8f0fe; color:#3b5bdb; border-left:3px solid #667eea; }
+.alert-ok      { background:#d4edda; color:#155724; padding:11px 14px; border-radius:8px; font-size:13px; }
+
+/* REU explanation */
+.reu-note {
+  font-size:11px; color:#bbb; text-align:right; margin-top:8px;
+}
+
+/* Empty */
+.empty { color:#aaa; font-size:14px; }
+
+@media (max-width:500px) {
+  body { padding:10px; }
+  .gauges-grid { grid-template-columns:repeat(3,1fr); gap:8px; }
+  .summary-grid { grid-template-columns:repeat(2,1fr); }
+  .v-label { width:80px; font-size:12px; }
+  .v-meta { min-width:90px; font-size:11px; }
+  .v-reu { display:none; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div>
+      <h1>📊 Muscle Stats</h1>
+      <div class="sub">Effort distribution · Recovery · Balance</div>
+    </div>
+    <a href="index.html" class="nav-link">← Workouts</a>
+  </div>
+
+  <!-- Date range -->
+  <div class="range-row">
+    <button class="range-btn" data-days="7"  onclick="loadAndRender(7)">7 days</button>
+    <button class="range-btn active" data-days="30" onclick="loadAndRender(30)">30 days</button>
+    <button class="range-btn" data-days="90" onclick="loadAndRender(90)">90 days</button>
+  </div>
+
+  <!-- Summary -->
+  <div class="summary-grid">
+    <div class="s-card"><div class="s-label">Sessions</div><div class="s-value" id="sTotalSessions">–</div></div>
+    <div class="s-card"><div class="s-label">Balance</div><div class="s-value" id="sBalance">–</div></div>
+    <div class="s-card"><div class="s-label">Most Trained</div><div class="s-value" id="sMostTrained">–</div></div>
+    <div class="s-card"><div class="s-label">Least Trained</div><div class="s-value" id="sLeastTrained">–</div></div>
+  </div>
+
+  <!-- Balance gauges -->
+  <div class="section-title">Push / Pull · Upper / Lower · Front / Back</div>
+  <div class="gauges-grid">
+    <div class="gauge-wrap" id="gauge_pushPull"></div>
+    <div class="gauge-wrap" id="gauge_upperLower"></div>
+    <div class="gauge-wrap" id="gauge_antPost"></div>
+  </div>
+
+  <!-- Volume chart -->
+  <div class="section-title">Volume by Muscle Group (decay-weighted REU)</div>
+  <div class="card">
+    <div id="volumeChart"></div>
+    <div class="reu-note">REU = Relative Effort Units · decay half-life 7 days · recent work weighted higher</div>
+  </div>
+
+  <!-- Recovery matrix -->
+  <div class="section-title">Recovery Status</div>
+  <div class="card" style="padding:18px 16px;">
+    <div id="recoveryMatrix"></div>
+    <div style="display:flex;gap:16px;margin-top:14px;font-size:11px;color:#888;flex-wrap:wrap;">
+      <span>🟢 Fresh (fully recovered)</span>
+      <span>🟡 Ready (80%+)</span>
+      <span>🟠 Recovering (40–80%)</span>
+      <span>🔴 Fatigued (&lt;40%)</span>
+    </div>
+  </div>
+
+  <!-- Frequency table -->
+  <div class="section-title">Weekly Frequency vs Target</div>
+  <div class="card" style="padding:14px 0;">
+    <div id="freqTable"></div>
+  </div>
+
+  <!-- Alerts -->
+  <div class="section-title">Alerts & Recommendations</div>
+  <div class="card">
+    <div id="alertsContainer"></div>
+  </div>
+
+</div>
+<script src="stats.js"></script>
+</body>
+</html>

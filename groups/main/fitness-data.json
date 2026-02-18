@@ -1,0 +1,65 @@
+{
+  "sessions": {
+    "2026-02-16": {
+      "completed": true,
+      "workoutName": "Custom Lower Body",
+      "exerciseLog": [
+        "Treadmill hike: 15 min",
+        "Back Squats: 3 sets escalating to 190 lbs",
+        "GHD Sit-ups: 3×12",
+        "Barbell Hip Extensions: 3 sets to 150 lbs",
+        "DB Curl to Shoulder Press: 3×35 lbs"
+      ],
+      "notes": "Strong lower body day."
+    },
+    "2026-02-17": {
+      "completed": true,
+      "workoutName": "Upper Body Push (Adapted)",
+      "exerciseLog": [
+        "DB Bench Press: 3 sets — 35 / 45 / 50 lbs",
+        "Cable Chest Flyes: 3×25 lbs"
+      ],
+      "notes": "Shoulders spent from prior day shoulder press. Adapted from lower body due to heavy leg work Monday. Hit DB max on bench (50 lbs)."
+    }
+  },
+  "plan": {
+    "name": "Upper Body Pull + Core",
+    "focus": "Back, Biceps, Rear Delts, Core — Day 4",
+    "note": "You've hit push twice this week. Time to balance with pull. Fresh legs, so we'll add a light leg finisher.",
+    "exercises": [
+      {
+        "name": "Dumbbell Rows",
+        "sets": "4 sets × 8-10 reps each arm"
+      },
+      {
+        "name": "Cable Face Pulls",
+        "sets": "3 sets × 15 reps"
+      },
+      {
+        "name": "Dumbbell Pullover",
+        "sets": "3 sets × 10-12 reps"
+      },
+      {
+        "name": "Cable Bicep Curls",
+        "sets": "3 sets × 10-12 reps"
+      },
+      {
+        "name": "Hammer Curls",
+        "sets": "3 sets × 12 reps"
+      },
+      {
+        "name": "Hanging Knee Raises",
+        "sets": "3 sets × 12-15 reps"
+      },
+      {
+        "name": "Dead Bugs",
+        "sets": "3 sets × 12 each side"
+      },
+      {
+        "name": "Pallof Press",
+        "sets": "3 sets × 10 each side"
+      }
+    ],
+    "finisher": "8-min incline treadmill walk (12-15% grade)"
+  }
+}
