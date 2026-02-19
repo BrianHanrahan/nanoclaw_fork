@@ -13,6 +13,7 @@ logs/
 *.keys.json
 .env
 .transcription.config.json
+.credentials.enc
 
 # OS
 .DS_Store
